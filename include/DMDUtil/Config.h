@@ -47,6 +47,10 @@ class DMDUTILAPI Config
   void SetSerumPUPTriggers(bool serumPupTriggers) { m_serumPupTriggers = serumPupTriggers; }
   void SetVniKey(const char* key) { m_vniKey = key ? key : ""; }
   const char* GetVniKey() const { return m_vniKey.c_str(); }
+  uint32_t GetVniScalerMode() const { return m_vniScalerMode; }
+  void SetVniScalerMode(uint32_t mode) { m_vniScalerMode = mode; }
+  uint32_t GetScalerMode() const { return m_scalerMode; }
+  void SetScalerMode(uint32_t mode) { m_scalerMode = mode; }
   void SetPUPVideosPath(const char* path) { m_pupVideosPath = path; }
   const char* GetPUPVideosPath() const { return m_pupVideosPath.c_str(); }
   bool IsPUPExactColorMatch() const { return m_pupExactColorMatch; }
@@ -152,6 +156,8 @@ class DMDUTILAPI Config
   bool m_pupCapture;
   bool m_serumPupTriggers;
   std::string m_vniKey;
+  uint32_t m_vniScalerMode;
+  uint32_t m_scalerMode;
   std::string m_pupVideosPath;
   bool m_pupExactColorMatch;
   int m_framesTimeout;

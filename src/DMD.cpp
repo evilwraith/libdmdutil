@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -56,6 +57,119 @@
 
 namespace
 {
+void ScalerDoublerRgb24(const uint8_t* src, uint8_t* dst, uint16_t w, uint16_t h)
+{
+  const size_t dstW = (size_t)w * 2u;
+  for (uint16_t y = 0; y < h; ++y)
+  {
+    const uint8_t* srcRow = src + (size_t)y * w * 3u;
+    uint8_t* dstRow0 = dst + (size_t)(y * 2u) * dstW * 3u;
+    uint8_t* dstRow1 = dstRow0 + dstW * 3u;
+    for (uint16_t x = 0; x < w; ++x)
+    {
+      const uint8_t r = srcRow[x * 3u + 0];
+      const uint8_t g = srcRow[x * 3u + 1];
+      const uint8_t b = srcRow[x * 3u + 2];
+      uint8_t* d0 = dstRow0 + (size_t)(x * 2u) * 3u;
+      uint8_t* d1 = dstRow1 + (size_t)(x * 2u) * 3u;
+      d0[0] = d0[3] = d1[0] = d1[3] = r;
+      d0[1] = d0[4] = d1[1] = d1[4] = g;
+      d0[2] = d0[5] = d1[2] = d1[5] = b;
+    }
+  }
+}
+
+void ScalerScale2xRgb24(const uint8_t* src, uint8_t* dst, uint16_t w, uint16_t h)
+{
+  const size_t dstW = (size_t)w * 2u;
+  auto px = [&](int x, int y) -> const uint8_t*
+  {
+    if (x < 0) x = 0;
+    else if (x >= (int)w) x = (int)w - 1;
+    if (y < 0) y = 0;
+    else if (y >= (int)h) y = (int)h - 1;
+    return src + ((size_t)y * w + (size_t)x) * 3u;
+  };
+  auto eq = [](const uint8_t* a, const uint8_t* b) { return a[0] == b[0] && a[1] == b[1] && a[2] == b[2]; };
+  auto put = [&](int x, int y, const uint8_t* p)
+  {
+    uint8_t* d = dst + ((size_t)y * dstW + (size_t)x) * 3u;
+    d[0] = p[0];
+    d[1] = p[1];
+    d[2] = p[2];
+  };
+  for (int y = 0; y < (int)h; ++y)
+  {
+    for (int x = 0; x < (int)w; ++x)
+    {
+      const uint8_t* P = px(x, y);
+      const uint8_t* A = px(x, y - 1);
+      const uint8_t* B = px(x + 1, y);
+      const uint8_t* C = px(x, y + 1);
+      const uint8_t* D = px(x - 1, y);
+      const uint8_t* E1 = (eq(D, A) && !eq(D, C) && !eq(A, B)) ? A : P;
+      const uint8_t* E2 = (eq(A, B) && !eq(A, D) && !eq(B, C)) ? B : P;
+      const uint8_t* E3 = (eq(C, D) && !eq(C, B) && !eq(D, A)) ? D : P;
+      const uint8_t* E4 = (eq(B, C) && !eq(B, A) && !eq(C, D)) ? C : P;
+      put(x * 2, y * 2, E1);
+      put(x * 2 + 1, y * 2, E2);
+      put(x * 2, y * 2 + 1, E3);
+      put(x * 2 + 1, y * 2 + 1, E4);
+    }
+  }
+}
+
+void ScalerDoublerRgb565(const uint16_t* src, uint16_t* dst, uint16_t w, uint16_t h)
+{
+  const size_t dstW = (size_t)w * 2u;
+  for (uint16_t y = 0; y < h; ++y)
+  {
+    const uint16_t* srcRow = src + (size_t)y * w;
+    uint16_t* dstRow0 = dst + (size_t)(y * 2u) * dstW;
+    uint16_t* dstRow1 = dstRow0 + dstW;
+    for (uint16_t x = 0; x < w; ++x)
+    {
+      const uint16_t v = srcRow[x];
+      dstRow0[x * 2u] = v;
+      dstRow0[x * 2u + 1u] = v;
+      dstRow1[x * 2u] = v;
+      dstRow1[x * 2u + 1u] = v;
+    }
+  }
+}
+
+void ScalerScale2xRgb565(const uint16_t* src, uint16_t* dst, uint16_t w, uint16_t h)
+{
+  const size_t dstW = (size_t)w * 2u;
+  auto px = [&](int x, int y) -> uint16_t
+  {
+    if (x < 0) x = 0;
+    else if (x >= (int)w) x = (int)w - 1;
+    if (y < 0) y = 0;
+    else if (y >= (int)h) y = (int)h - 1;
+    return src[(size_t)y * w + (size_t)x];
+  };
+  for (int y = 0; y < (int)h; ++y)
+  {
+    for (int x = 0; x < (int)w; ++x)
+    {
+      const uint16_t P = px(x, y);
+      const uint16_t A = px(x, y - 1);
+      const uint16_t B = px(x + 1, y);
+      const uint16_t C = px(x, y + 1);
+      const uint16_t D = px(x - 1, y);
+      const uint16_t E1 = (D == A && D != C && A != B) ? A : P;
+      const uint16_t E2 = (A == B && A != D && B != C) ? B : P;
+      const uint16_t E3 = (C == D && C != B && D != A) ? D : P;
+      const uint16_t E4 = (B == C && B != A && C != D) ? C : P;
+      dst[((size_t)(y * 2)) * dstW + (size_t)(x * 2)] = E1;
+      dst[((size_t)(y * 2)) * dstW + (size_t)(x * 2 + 1)] = E2;
+      dst[((size_t)(y * 2 + 1)) * dstW + (size_t)(x * 2)] = E3;
+      dst[((size_t)(y * 2 + 1)) * dstW + (size_t)(x * 2 + 1)] = E4;
+    }
+  }
+}
+
 constexpr size_t kMaxFramePixels = 256u * 64u;
 constexpr size_t kMaxRgb24Bytes = kMaxFramePixels * 3u;
 
@@ -1119,10 +1233,13 @@ void DMD::FindDisplays()
           if (pConfig->IsPixelcade())
           {
             pPixelcadeDMD = PixelcadeDMD::Connect(pConfig->GetPixelcadeDevice());
+            m_pPixelcadeDMD = pPixelcadeDMD;
             if (pPixelcadeDMD) m_pPixelcadeDMDThread = new std::thread(&DMD::PixelcadeDMDThread, this);
           }
-
-          m_pPixelcadeDMD = pPixelcadeDMD;
+          else
+          {
+            m_pPixelcadeDMD = nullptr;
+          }
 #endif
 
 #if defined(DMDUTIL_ENABLE_PIN2DMD) && !((defined(__APPLE__) && ((defined(TARGET_OS_IOS) && TARGET_OS_IOS) || \
@@ -1231,6 +1348,8 @@ void DMD::ZeDMDThread()
   uint8_t palette[256 * 3] = {0};
   uint8_t indexBuffer[256 * 64] = {0};
   uint8_t renderBuffer[256 * 64 * 3] = {0};
+  uint16_t lastSetWidth = 0;
+  uint16_t lastSetHeight = 0;
 
   (void)m_stopFlag.load(std::memory_order_acquire);
 
@@ -1304,9 +1423,26 @@ void DMD::ZeDMDThread()
             continue;
           }
           frameSize = (uint16_t)framePixels;
-          // Activate the correct scaling mode.
-          m_pZeDMD->SetFrameSize(width, height);
         }
+
+        const uint32_t scalerMode = pConfig->GetScalerMode();
+        const uint16_t panelW = (uint16_t)m_pZeDMD->GetWidth();
+        const uint16_t panelH = (uint16_t)m_pZeDMD->GetHeight();
+        const bool applyScaler = (scalerMode != 0) && (width > 0) && (height > 0) &&
+                                 (panelW == (uint16_t)(width * 2)) && (panelH == (uint16_t)(height * 2));
+        const uint16_t outWidth = applyScaler ? panelW : width;
+        const uint16_t outHeight = applyScaler ? panelH : height;
+        if (outWidth != lastSetWidth || outHeight != lastSetHeight)
+        {
+          // Activate the correct scaling mode.
+          m_pZeDMD->SetFrameSize(outWidth, outHeight);
+          lastSetWidth = outWidth;
+          lastSetHeight = outHeight;
+        }
+        auto applyRgb24Scaler = [scalerMode](const uint8_t* src, uint8_t* dst, uint16_t w, uint16_t h)
+        { if (scalerMode == 2) ScalerScale2xRgb24(src, dst, w, h); else ScalerDoublerRgb24(src, dst, w, h); };
+        auto applyRgb565Scaler = [scalerMode](const uint16_t* src, uint16_t* dst, uint16_t w, uint16_t h)
+        { if (scalerMode == 2) ScalerScale2xRgb565(src, dst, w, h); else ScalerDoublerRgb565(src, dst, w, h); };
 
         Log(DMDUtil_LogLevel_DEBUG, "ZeDMD: Render frame buffer position %d at real buffer position %d", bufferPosition,
             bufferPositionMod);
@@ -1330,14 +1466,33 @@ void DMD::ZeDMDThread()
             continue;
           }
 
-          AdjustRGB24Depth(m_pUpdateBufferQueue[bufferPositionMod]->data, rgb24Data, (size_t)width * height, palette,
-                           m_pUpdateBufferQueue[bufferPositionMod]->depth);
+          if (applyScaler)
+          {
+            uint8_t srcRgb24[128 * 32 * 3];
+            AdjustRGB24Depth(m_pUpdateBufferQueue[bufferPositionMod]->data, srcRgb24, (size_t)width * height, palette,
+                             m_pUpdateBufferQueue[bufferPositionMod]->depth);
+            applyRgb24Scaler(srcRgb24, rgb24Data, width, height);
+          }
+          else
+          {
+            AdjustRGB24Depth(m_pUpdateBufferQueue[bufferPositionMod]->data, rgb24Data, (size_t)width * height, palette,
+                             m_pUpdateBufferQueue[bufferPositionMod]->depth);
+          }
           m_pZeDMD->RenderRgb888(rgb24Data);
         }
         else if (m_pUpdateBufferQueue[bufferPositionMod]->mode == Mode::RGB16 ||
                  (m_pSerum && IsSerumV2Mode(m_pUpdateBufferQueue[bufferPositionMod]->mode)))
         {
-          m_pZeDMD->RenderRgb565(m_pUpdateBufferQueue[bufferPositionMod]->segData);
+          if (applyScaler)
+          {
+            uint16_t scaled565[256 * 64];
+            applyRgb565Scaler(m_pUpdateBufferQueue[bufferPositionMod]->segData, scaled565, width, height);
+            m_pZeDMD->RenderRgb565(scaled565);
+          }
+          else
+          {
+            m_pZeDMD->RenderRgb565(m_pUpdateBufferQueue[bufferPositionMod]->segData);
+          }
         }
         else
         {
@@ -1397,6 +1552,12 @@ void DMD::ZeDMDThread()
           }
         }
 
+        if (update && applyScaler)
+        {
+          uint8_t srcRgb24[128 * 32 * 3];
+          memcpy(srcRgb24, renderBuffer, (size_t)width * height * 3u);
+          applyRgb24Scaler(srcRgb24, renderBuffer, width, height);
+        }
         if (update) m_pZeDMD->RenderRgb888(renderBuffer);
       }
     }
@@ -1408,6 +1569,25 @@ void DMD::SerumThread()
   Config* const pConfig = Config::GetInstance();
   constexpr uint16_t kSerumTriggerMinEvent = 50000;
   constexpr uint16_t kSerumTriggerMaxEvent = 62000;
+
+  const char* serumProbeEnv = std::getenv("SERUM_DEBUG_LOAD_PROBE");
+  const bool serumProbe = serumProbeEnv && (*serumProbeEnv == '1' || *serumProbeEnv == 't' ||
+                                            *serumProbeEnv == 'T' || *serumProbeEnv == 'y' ||
+                                            *serumProbeEnv == 'Y');
+  if (serumProbe)
+  {
+    Log(DMDUtil_LogLevel_INFO,
+        "[SerumThread probe] entry: altColorEnabled=%d altColorPath='%s' romName='%s' configAltColorPath='%s'",
+        pConfig->IsAltColor() ? 1 : 0, m_altColorPath[0] ? m_altColorPath : "(empty)",
+        m_romName[0] ? m_romName : "(empty)", pConfig->GetAltColorPath() ? pConfig->GetAltColorPath() : "(null)");
+  }
+
+  if (!pConfig->IsAltColor())
+  {
+    if (serumProbe)
+      Log(DMDUtil_LogLevel_INFO,
+          "[SerumThread probe] AltColor disabled in libdmdutil Config; SerumThread exiting without ever calling Serum_Load");
+  }
 
   if (pConfig->IsAltColor())
   {
@@ -1515,9 +1695,26 @@ void DMD::SerumThread()
             // don't load Serum until all displays are found
             if (m_finding.load(std::memory_order_acquire))
             {
+              if (serumProbe)
+              {
+                static uint32_t lastFindingLogMs = 0;
+                uint32_t nowMs = GetMonotonicTimeMs();
+                if (nowMs - lastFindingLogMs > 1000)
+                {
+                  Log(DMDUtil_LogLevel_INFO,
+                      "[SerumThread probe] deferring Serum_Load: m_finding still true (FindDisplays in progress) romName='%s'",
+                      m_romName);
+                  lastFindingLogMs = nowMs;
+                }
+              }
               QueueBuffer();
               continue;
             }
+
+            if (serumProbe)
+              Log(DMDUtil_LogLevel_INFO,
+                  "[SerumThread probe] rom changed: prev='%s' new='%s' altColorPath='%s' (about to call Serum_Load)",
+                  name[0] ? name : "(empty)", m_romName, m_altColorPath[0] ? m_altColorPath : "(empty, will use config)");
 
             strcpy(name, m_romName);
 
@@ -1565,10 +1762,9 @@ void DMD::SerumThread()
             {
               for (RGB24DMD* pRGB24DMD : m_rgb24DMDs)
               {
-                if (pRGB24DMD->GetHeight() == 64)
-                  flags |= FLAG_REQUEST_64P_FRAMES;
-                else
-                  flags |= FLAG_REQUEST_32P_FRAMES;
+                (void)pRGB24DMD;
+                flags |= FLAG_REQUEST_32P_FRAMES;
+                flags |= FLAG_REQUEST_64P_FRAMES;
               }
             }
 
@@ -1604,10 +1800,21 @@ void DMD::SerumThread()
             if (!flags) flags |= FLAG_REQUEST_32P_FRAMES;
             flags |= FLAG_REQUEST_FALLBACK;
 
+            if (serumProbe)
+              Log(DMDUtil_LogLevel_INFO,
+                  "[SerumThread probe] invoking Serum_Load(altColorPath='%s', romName='%s', flags=0x%02x)",
+                  m_altColorPath, m_romName, (unsigned)flags);
             m_pSerum = (name[0] != '\0') ? Serum_Load(m_altColorPath, m_romName, flags) : nullptr;
+            if (serumProbe && !m_pSerum)
+              Log(DMDUtil_LogLevel_INFO,
+                  "[SerumThread probe] Serum_Load returned NULL for romName='%s' (no colorization will be applied)",
+                  m_romName);
             if (m_pSerum)
             {
               Log(DMDUtil_LogLevel_INFO, "Serum: Loaded v%d colorization for %s", m_pSerum->SerumVersion, m_romName);
+              Log(DMDUtil_LogLevel_INFO,
+                  "[Serum probe] requestedFlags=0x%02x SerumVersion=%d width32=%u width64=%u", (unsigned)flags,
+                  (int)m_pSerum->SerumVersion, (unsigned)m_pSerum->width32, (unsigned)m_pSerum->width64);
 
               Serum_SetIgnoreUnknownFramesTimeout(Config::GetInstance()->GetIgnoreUnknownFramesTimeout());
               Serum_SetMaximumUnknownFramesToSkip(Config::GetInstance()->GetMaximumUnknownFramesToSkip());
@@ -1621,8 +1828,45 @@ void DMD::SerumThread()
             FrameContext frameContext{};
             GetQueueFrameContext(bufferPositionMod, frameContext);
 
+            uint8_t serumColorizeBuffer[128 * 64];
+            uint8_t* colorizeData = m_pUpdateBufferQueue[bufferPositionMod]->data;
+            const uint16_t srcWidth = m_pUpdateBufferQueue[bufferPositionMod]->width;
+            const uint8_t srcHeight = m_pUpdateBufferQueue[bufferPositionMod]->height;
+            uint16_t serumExpectedWidth = (m_pSerum->width32 != 0) ? m_pSerum->width32 : m_pSerum->width64;
+            uint8_t serumExpectedHeight = (m_pSerum->width32 != 0) ? 32 : 64;
+            if (srcWidth > 0 && srcHeight > 0 &&
+                (srcWidth < serumExpectedWidth || srcHeight < serumExpectedHeight) &&
+                static_cast<size_t>(serumExpectedWidth) * serumExpectedHeight <= sizeof(serumColorizeBuffer))
+            {
+              std::memset(serumColorizeBuffer, 0, sizeof(serumColorizeBuffer));
+              FrameUtil::Helper::CenterIndexed(serumColorizeBuffer, serumExpectedWidth, serumExpectedHeight,
+                                               m_pUpdateBufferQueue[bufferPositionMod]->data, srcWidth, srcHeight);
+              colorizeData = serumColorizeBuffer;
+            }
+
             const auto colorizeStart = std::chrono::steady_clock::now();
-            uint32_t result = Serum_Colorize(m_pUpdateBufferQueue[bufferPositionMod]->data);
+            uint32_t result = Serum_Colorize(colorizeData);
+            {
+              static uint32_t serumColorizeCallCount = 0;
+              static uint32_t serumNoFrameCount = 0;
+              static uint32_t serumSameFrameCount = 0;
+              static uint32_t serumIdentifiedCount = 0;
+              ++serumColorizeCallCount;
+              if (result == IDENTIFY_NO_FRAME)
+                ++serumNoFrameCount;
+              else if (result == IDENTIFY_SAME_FRAME)
+                ++serumSameFrameCount;
+              else
+                ++serumIdentifiedCount;
+              if ((serumColorizeCallCount % 60) == 1)
+              {
+                Log(DMDUtil_LogLevel_INFO,
+                    "[Serum probe] colorize calls=%u identified=%u sameFrame=%u noFrame=%u srcWxH=%ux%u lastResult=0x%x",
+                    serumColorizeCallCount, serumIdentifiedCount, serumSameFrameCount, serumNoFrameCount,
+                    (unsigned)m_pUpdateBufferQueue[bufferPositionMod]->width,
+                    (unsigned)m_pUpdateBufferQueue[bufferPositionMod]->height, (unsigned)result);
+              }
+            }
             const uint32_t colorizeTimeUs = static_cast<uint32_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - colorizeStart)
                     .count());
@@ -1831,6 +2075,7 @@ void DMD::VniThread()
             if (m_pVni)
             {
               Log(DMDUtil_LogLevel_INFO, "VNI: Loaded colorization for %s", m_romName);
+              Vni_SetScalerMode(m_pVni, pConfig->GetVniScalerMode());
             }
           }
         }
@@ -2329,7 +2574,16 @@ void DMD::PixelcadeDMDThread()
       {
         uint16_t width = m_pUpdateBufferQueue[bufferPositionMod]->width;
         uint16_t height = m_pUpdateBufferQueue[bufferPositionMod]->height;
-        int length = (int)width * height;
+        const size_t framePixels = (size_t)width * (size_t)height;
+        if (framePixels == 0 || framePixels > kMaxFramePixels)
+        {
+          Log(DMDUtil_LogLevel_ERROR,
+              "Pixelcade: Invalid frame size %ux%u exceeds internal limit of 256x64 pixels, skipping frame", width,
+              height);
+          continue;
+        }
+
+        int length = (int)framePixels;
 
         bool update = false;
         if (m_pUpdateBufferQueue[bufferPositionMod]->depth != 24)

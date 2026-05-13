@@ -21,6 +21,8 @@ Config::Config()
   m_pupCapture = false;
   m_serumPupTriggers = false;
   m_vniKey.clear();
+  m_vniScalerMode = 0;
+  m_scalerMode = 0;
   m_pupVideosPath.clear();
   m_pupExactColorMatch = true;
   m_framesTimeout = 0;
