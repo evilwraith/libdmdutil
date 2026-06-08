@@ -7,4 +7,4 @@ namespace DMDUtil
 
 void Log(DMDUtil_LogLevel logLevel, const char* format, ...);
 
-}
+}  // namespace DMDUtil
