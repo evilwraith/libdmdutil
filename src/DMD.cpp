@@ -4012,23 +4012,34 @@ void DMD::PupDMDThread()
           else
             return;
 
+          // Every accepted branch above normalizes the capture into a 128x32 buffer, which is
+          // the resolution the PuPCapture trigger hashes are authored/stored at. PUPDMD::Match
+          // and MatchIndexed reject any trigger whose stored width/height differ from the
+          // passed dimensions, so the match must use the *scaled* 128x32 size. Passing the
+          // source frame size (e.g. a 192x64 ROM DMD) here skips every 128x32 trigger and no
+          // DMD trigger ever fires. The orange-palette frame must likewise be sized 128x32 to
+          // avoid reading past the end of scaledBuffer.
+          const uint8_t matchWidth = 128;
+          const uint8_t matchHeight = 32;
+          const int matchLength = (int)matchWidth * matchHeight;
+
           uint16_t triggerID = 0;
           if (Config::GetInstance()->IsPUPExactColorMatch())
           {
-            triggerID = m_pPUPDMD->MatchIndexed(scaledBuffer, width, height);
+            triggerID = m_pPUPDMD->MatchIndexed(scaledBuffer, matchWidth, matchHeight);
           }
           else
           {
             // apply a standard orange palette
             UpdatePalette(palette, depth, 255, 69, 0);
 
-            uint8_t* pFrame = (uint8_t*)malloc(length * 3);
-            for (uint16_t i = 0; i < length; i++)
+            uint8_t* pFrame = (uint8_t*)malloc(matchLength * 3);
+            for (int i = 0; i < matchLength; i++)
             {
               uint16_t pos = scaledBuffer[i] * 3;
               memcpy(&pFrame[i * 3], &palette[pos], 3);
             }
-            triggerID = m_pPUPDMD->Match(pFrame, width, height, false);
+            triggerID = m_pPUPDMD->Match(pFrame, matchWidth, matchHeight, false);
             free(pFrame);
           }
 
