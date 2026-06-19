@@ -42,7 +42,7 @@
 
 #include "AlphaNumeric.h"
 #include "FrameUtil.h"
-#include "Logger.h"
+#include "DMDUtil/Logger.h"
 #include "TimeUtils.h"
 #include "ZeDMD.h"
 #include "komihash/komihash.h"
