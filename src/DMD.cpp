@@ -43,6 +43,7 @@
 #include "AlphaNumeric.h"
 #include "FrameUtil.h"
 #include "DMDUtil/Logger.h"
+#include "OutputFilters.h"
 #include "TimeUtils.h"
 #include "ZeDMD.h"
 #include "komihash/komihash.h"
@@ -1356,6 +1357,7 @@ void DMD::ZeDMDThread()
   Config* const pConfig = Config::GetInstance();
   bool showNotColorizedFrames = pConfig->IsShowNotColorizedFrames();
   bool excludeColorizedFrames = pConfig->IsExcludeColorizedFramesForZeDMD();
+  const int roundedCorners = pConfig->GetRoundedCorners();
 
   while (true)
   {
@@ -1478,21 +1480,23 @@ void DMD::ZeDMDThread()
             AdjustRGB24Depth(m_pUpdateBufferQueue[bufferPositionMod]->data, rgb24Data, (size_t)width * height, palette,
                              m_pUpdateBufferQueue[bufferPositionMod]->depth);
           }
+          ApplyRoundedCornersRGB24(rgb24Data, outWidth, outHeight, roundedCorners);
           m_pZeDMD->RenderRgb888(rgb24Data);
         }
         else if (m_pUpdateBufferQueue[bufferPositionMod]->mode == Mode::RGB16 ||
                  (m_pSerum && IsSerumV2Mode(m_pUpdateBufferQueue[bufferPositionMod]->mode)))
         {
+          uint16_t rgb565Data[256 * 64];
           if (applyScaler)
           {
-            uint16_t scaled565[256 * 64];
-            applyRgb565Scaler(m_pUpdateBufferQueue[bufferPositionMod]->segData, scaled565, width, height);
-            m_pZeDMD->RenderRgb565(scaled565);
+            applyRgb565Scaler(m_pUpdateBufferQueue[bufferPositionMod]->segData, rgb565Data, width, height);
           }
           else
           {
-            m_pZeDMD->RenderRgb565(m_pUpdateBufferQueue[bufferPositionMod]->segData);
+            memcpy(rgb565Data, m_pUpdateBufferQueue[bufferPositionMod]->segData, (size_t)frameSize * sizeof(uint16_t));
           }
+          ApplyRoundedCornersRGB565(rgb565Data, outWidth, outHeight, roundedCorners);
+          m_pZeDMD->RenderRgb565(rgb565Data);
         }
         else
         {
@@ -1552,13 +1556,17 @@ void DMD::ZeDMDThread()
           }
         }
 
-        if (update && applyScaler)
+        if (update)
         {
-          uint8_t srcRgb24[128 * 32 * 3];
-          memcpy(srcRgb24, renderBuffer, (size_t)width * height * 3u);
-          applyRgb24Scaler(srcRgb24, renderBuffer, width, height);
+          if (applyScaler)
+          {
+            uint8_t srcRgb24[128 * 32 * 3];
+            memcpy(srcRgb24, renderBuffer, (size_t)width * height * 3u);
+            applyRgb24Scaler(srcRgb24, renderBuffer, width, height);
+          }
+          ApplyRoundedCornersRGB24(renderBuffer, outWidth, outHeight, roundedCorners);
+          m_pZeDMD->RenderRgb888(renderBuffer);
         }
-        if (update) m_pZeDMD->RenderRgb888(renderBuffer);
       }
     }
   }
@@ -2326,6 +2334,7 @@ void DMD::PIN2DMDThread()
   Config* const pConfig = Config::GetInstance();
   bool showNotColorizedFrames = pConfig->IsShowNotColorizedFrames();
   bool excludeColorizedFrames = pConfig->IsExcludeColorizedFramesForPIN2DMD();
+  const int roundedCorners = pConfig->GetRoundedCorners();
 
   auto scaleToTarget = [&](const uint8_t* src, uint16_t width, uint16_t height, uint8_t* dst) -> bool
   {
@@ -2512,6 +2521,7 @@ void DMD::PIN2DMDThread()
 
       if (update && scaleToTarget(rgb24Data, width, height, scaledBuffer))
       {
+        ApplyRoundedCornersRGB24(scaledBuffer, targetWidth, targetHeight, roundedCorners);
         PIN2DMDRenderRaw(targetWidth, targetHeight, scaledBuffer, 1);
       }
     }
@@ -2537,6 +2547,7 @@ void DMD::PixelcadeDMDThread()
   Config* const pConfig = Config::GetInstance();
   bool showNotColorizedFrames = pConfig->IsShowNotColorizedFrames();
   bool excludeColorizedFrames = pConfig->IsExcludeColorizedFramesForPixelcade();
+  const int roundedCorners = pConfig->GetRoundedCorners();
 
   while (true)
   {
@@ -2611,6 +2622,7 @@ void DMD::PixelcadeDMDThread()
 
           if (m_pPixelcadeDMD->GetIsV2())
           {
+            ApplyRoundedCornersRGB24(scaledBuffer, targetWidth, targetHeight, roundedCorners);
             m_pPixelcadeDMD->UpdateRGB24(scaledBuffer);
           }
           else
@@ -2730,7 +2742,11 @@ void DMD::PixelcadeDMDThread()
           }
         }
 
-        if (update) m_pPixelcadeDMD->Update(rgb565Data);
+        if (update)
+        {
+          ApplyRoundedCornersRGB565(rgb565Data, targetWidth, targetHeight, roundedCorners);
+          m_pPixelcadeDMD->Update(rgb565Data);
+        }
       }
     }
   }
