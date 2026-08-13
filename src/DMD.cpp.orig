@@ -4083,49 +4083,41 @@ void DMD::PupDMDThread()
             memcpy(scaledBuffer, renderBuffer, 128 * 32);
           else if (width == 128 && height == 16)
             FrameUtil::Helper::CenterIndexed(scaledBuffer, 128, 32, renderBuffer, 128, 16);
-          else if (width <= 256 && height == 64)
+          else if (width == 192 && height == 64)
+            FrameUtil::Helper::ScaleDownPUP(scaledBuffer, 128, 32, renderBuffer, 192, 64);
+          else
+            return;
+
+          // Every accepted branch above normalizes the capture into a 128x32 buffer, which is
+          // the resolution the PuPCapture trigger hashes are authored/stored at. PUPDMD::Match
+          // and MatchIndexed reject any trigger whose stored width/height differ from the
+          // passed dimensions, so the match must use the *scaled* 128x32 size. Passing the
+          // source frame size (e.g. a 192x64 ROM DMD) here skips every 128x32 trigger and no
+          // DMD trigger ever fires. The orange-palette frame must likewise be sized 128x32 to
+          // avoid reading past the end of scaledBuffer.
+          const uint8_t matchWidth = 128;
+          const uint8_t matchHeight = 32;
+          const int matchLength = (int)matchWidth * matchHeight;
+
+          uint16_t triggerID = 0;
+          if (Config::GetInstance()->IsPUPExactColorMatch())
           {
-            // Downscale a 64-row capture (typically 192x64 or 256x64) to the 128x32 resolution the
-            // PuPCapture trigger hashes are authored at, using the SAME 2x2 box-sum + quantization
-            // the original Windows capture tool (Freezy's DmdExt) used. A 256x64 source maps to a
-            // full 128x32 frame; a 192x64 source maps to a 96x32 image centered in the 128x32 frame
-            // (ofsX = 16). For a 2-bit / 4-level DMD the 0..12 box sum is NOT rounded to the nearest
-            // level: the capture quantizes at 3/6/11 (not the round-to-nearest 2/6/10), which shifts
-            // the darkest and brightest steps. Using round-to-nearest (or the previous mode/majority
-            // ScaleDownPUP) leaves glyph edges one level off, so the indexed/boolean hash never
-            // matches the stored capture and DMD triggers never fire (e.g. Baywatch). See vpinball
-            // PR #3527.
-            memset(scaledBuffer, 0, 128 * 32);
-            const bool fourLevel = (depth == 2);
-            const unsigned int ofsX = (128 - (width / 2)) / 2;
-            for (unsigned int y = 0; y < 32; y++)
-            {
-              for (unsigned int x = 0; x < (unsigned int)(width / 2); x++)
-              {
-                const unsigned int px = x * 2;
-                const unsigned int py = y * (2u * width);
-                const uint32_t sum = (uint32_t)renderBuffer[py + px] + renderBuffer[py + px + 1]
-                                   + renderBuffer[py + px + width] + renderBuffer[py + px + width + 1];
-                uint8_t value;
-                if (fourLevel)
-                  value = sum < 3 ? 0 : sum < 6 ? 1 : sum < 11 ? 2 : 3;
-                else
-                  value = (uint8_t)((sum + 2) >> 2);
-                scaledBuffer[y * 128 + ofsX + x] = value;
-              }
-            }
+            triggerID = m_pPUPDMD->MatchIndexed(scaledBuffer, matchWidth, matchHeight);
           }
           else
-            // Skip this frame, do not abandon the thread. This used to `return`, which ends
-            // PupDMDThread outright -- a single frame of an unhandled size then silently disabled
-            // every DMD trigger for the rest of the session, with nothing logged.
-            continue;
+          {
+            // apply a standard orange palette
+            UpdatePalette(palette, depth, 255, 69, 0);
 
-          // The capture above normalizes the frame into a 128x32 indexed buffer, which is the
-          // resolution the PuPCapture trigger hashes are authored/stored at. MatchIndexed rejects
-          // any trigger whose stored width/height differ from the passed dimensions, so the match
-          // must use the scaled 128x32 size (passing the source 192x64 size skips every trigger).
-          const uint16_t triggerID = m_pPUPDMD->MatchIndexed(scaledBuffer, 128, 32);
+            uint8_t* pFrame = (uint8_t*)malloc(matchLength * 3);
+            for (int i = 0; i < matchLength; i++)
+            {
+              uint16_t pos = scaledBuffer[i] * 3;
+              memcpy(&pFrame[i * 3], &palette[pos], 3);
+            }
+            triggerID = m_pPUPDMD->Match(pFrame, matchWidth, matchHeight, false);
+            free(pFrame);
+          }
 
           if (triggerID > 0) HandleTrigger(triggerID);
         }
