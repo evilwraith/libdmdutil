@@ -199,6 +199,9 @@ class DMDUTILAPI DMD
   void SetRomName(const char* name);
   void SetAltColorPath(const char* path);
   void SetPUPVideosPath(const char* path);
+  // Overrides the folder PuP captures are looked up under, for hosts where the table-side ROM alias
+  // differs from PinMAME's resolved ROM name (VPMAlias.txt / cPuPPack). Unset falls back to the ROM name.
+  void SetPUPName(const char* name);
   void SetPUPTrigger(const char source, const uint16_t id, const uint8_t value = 1);
   void DumpDMDTxt();
   void DumpDMDRaw();
@@ -302,6 +305,7 @@ class DMDUTILAPI DMD
   void SerumThread();
   void VniThread();
 
+  char m_pupName[DMDUTIL_MAX_NAME_SIZE] = {0};
   char m_romName[DMDUTIL_MAX_NAME_SIZE] = {0};
   char m_altColorPath[DMDUTIL_MAX_PATH_SIZE] = {0};
   char m_pupVideosPath[DMDUTIL_MAX_PATH_SIZE] = {0};

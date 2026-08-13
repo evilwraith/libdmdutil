@@ -682,6 +682,8 @@ void DMD::SetAltColorPath(const char* path) { strcpy(m_altColorPath, path ? path
 
 void DMD::SetPUPVideosPath(const char* path) { strcpy(m_pupVideosPath, path ? path : ""); }
 
+void DMD::SetPUPName(const char* name) { strcpy(m_pupName, name ? name : ""); }
+
 void DMD::DumpDMDTxt()
 {
   if (!m_pDumpDMDTxtThread)
@@ -3983,9 +3985,15 @@ void DMD::PupDMDThread()
       ++bufferPosition;  // 65635 + 1 = 0
       uint8_t bufferPositionMod = bufferPosition % DMDUTIL_FRAME_BUFFER_SIZE;
 
-      if (strcmp(m_romName, name) != 0)
+      // Use a separate PuP pack name when the host has supplied one -- the table-side ROM alias can
+      // differ from PinMAME's resolved ROM name (VPMAlias.txt / cPuPPack), and it is the pack folder
+      // the captures live under, not the resolved ROM, that PUPDMD::Load has to be aimed at. Falls
+      // back to m_romName so behaviour is unchanged when SetPUPName has never been called.
+      const char* const pupRomName = (m_pupName[0] != '\0') ? m_pupName : m_romName;
+
+      if (strcmp(pupRomName, name) != 0)
       {
-        strcpy(name, m_romName);
+        strcpy(name, pupRomName);
 
         observedMaxIndex = 0;
         loadedDepth = 0;
@@ -4049,9 +4057,9 @@ void DMD::PupDMDThread()
 
           Log(DMDUtil_LogLevel_INFO,
               "Loading PuP capture triggers for %s at depth %d (declared %d, highest index driven so far %d)",
-              m_romName, effectiveDepth, declaredDepth, observedMaxIndex);
+              pupRomName, effectiveDepth, declaredDepth, observedMaxIndex);
 
-          if (!m_pPUPDMD->Load(m_pupVideosPath, m_romName, effectiveDepth))
+          if (!m_pPUPDMD->Load(m_pupVideosPath, pupRomName, effectiveDepth))
           {
             delete (m_pPUPDMD);
             m_pPUPDMD = nullptr;
