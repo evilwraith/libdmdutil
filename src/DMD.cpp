@@ -838,6 +838,11 @@ bool DMD::DestroyConsoleDMD(ConsoleDMD* pConsoleDMD)
 void DMD::UpdateData(const uint8_t* pData, int depth, uint16_t width, uint16_t height, uint8_t r, uint8_t g, uint8_t b,
                      Mode mode, bool buffered)
 {
+  // Too large for the queue, but RGB24DMD sinks can carry it at full resolution.
+  if (pData && mode == Mode::RGB24 && (size_t)width * height * 3u > sizeof(Update::data) &&
+      DeliverHighResRGB24(pData, width, height))
+    return;
+
   if (pData && !UpdateFrameFits(width, height, (mode == Mode::RGB16 ? 2u : (mode == Mode::RGB24 ? 3u : 1u)),
                                 sizeof(Update::data),
                                 "UpdateData"))
@@ -869,6 +874,11 @@ void DMD::UpdateData(const uint8_t* pData, int depth, uint16_t width, uint16_t h
 void DMD::UpdateDataWithTimestampInternal(const uint8_t* pData, int depth, uint16_t width, uint16_t height, uint8_t r,
                                           uint8_t g, uint8_t b, Mode mode, uint32_t timestampMs, bool buffered)
 {
+  // Too large for the queue, but RGB24DMD sinks can carry it at full resolution.
+  if (pData && mode == Mode::RGB24 && (size_t)width * height * 3u > sizeof(Update::data) &&
+      DeliverHighResRGB24(pData, width, height))
+    return;
+
   if (pData && !UpdateFrameFits(width, height, (mode == Mode::RGB16 ? 2u : (mode == Mode::RGB24 ? 3u : 1u)),
                                 sizeof(Update::data),
                                 "UpdateDataWithTimestampInternal"))
@@ -897,6 +907,63 @@ void DMD::UpdateDataWithTimestampInternal(const uint8_t* pData, int depth, uint1
   QueueUpdate(dmdUpdate, buffered, true, timestampMs);
 }
 
+
+// Deliver an RGB24 frame larger than Update can hold straight to the RGB24DMD sinks.
+//
+// Update carries its payload in fixed inline arrays, and everything that reads those arrays -- the
+// Serum, VNI, PuP, ZeDMD, Pixelcade, level and console consumers -- is written against the same
+// fixed size. Raising it means raising all of them, and those paths cannot use a high-resolution
+// frame anyway: Serum and VNI packs are authored at the DMD's native size, and physical panels have
+// real hardware limits (ZeDMD HD is 256x64).
+//
+// RGB24DMD has none of that. It mallocs width * height * 3 at construction and its Update() is a
+// straight memcpy when the dimensions match, so it is already able to carry any resolution. That is
+// the sink a table-driven DMD renders to -- FlexDMD asks for CreateRGB24DMD(width, height) at
+// whatever size the table's script named -- so a high-resolution frame can reach the panel at full
+// fidelity without the queue being involved at all.
+//
+// Only exact-size sinks are fed. RGB24DMD::Update() rescales for a few specific size pairs and
+// silently ignores everything else, so handing a 768x256 frame to a 256x64 sink would produce
+// nothing; skipping it here makes that explicit rather than accidental.
+//
+// What is given up: queue pacing, the buffered-frame path, and timestamps. A table-driven RGB24
+// source has no colorization to sequence against and produces frames on its own clock, so none of
+// those apply to it.
+bool DMD::DeliverHighResRGB24(const uint8_t* pData, uint16_t width, uint16_t height)
+{
+  if (pData == nullptr || width == 0 || height == 0)
+    return false;
+
+  std::shared_lock<std::shared_mutex> sl(m_dmdSharedMutex);
+  if (m_rgb24DMDs.empty())
+    return false;
+
+  bool delivered = false;
+  for (RGB24DMD* pRGB24DMD : m_rgb24DMDs)
+  {
+    if (pRGB24DMD->GetWidth() != (int)width || pRGB24DMD->GetHeight() != (int)height)
+      continue;
+
+    pRGB24DMD->Update(const_cast<uint8_t*>(pData), width, height);
+    delivered = true;
+  }
+
+  if (delivered)
+  {
+    static uint16_t lastWidth = 0;
+    static uint16_t lastHeight = 0;
+    if (width != lastWidth || height != lastHeight)
+    {
+      lastWidth = width;
+      lastHeight = height;
+      Log(DMDUtil_LogLevel_INFO,
+          "Routing %ux%u RGB24 frames straight to the matching RGB24DMD sink: larger than the %ux%u "
+          "frame queue can carry, so queue pacing and colorization do not apply.",
+          width, height, DMDUTIL_MAX_FRAME_WIDTH, DMDUTIL_MAX_FRAME_HEIGHT);
+    }
+  }
+  return delivered;
+}
 void DMD::QueueUpdate(const std::shared_ptr<Update> dmdUpdate, bool buffered, bool hasTimestamp, uint32_t timestampMs,
                       const FrameContext* frameContext)
 {
@@ -1026,6 +1093,10 @@ void DMD::UpdateRGB24DataWithTimestamp(const uint8_t* pData, uint16_t width, uin
 void DMD::UpdateRGB24DataWithMetadataAndTimestamp(const uint8_t* pData, uint16_t width, uint16_t height,
                                                   uint32_t timestampMs, const FrameContext& frameContext, bool buffered)
 {
+  // Too large for the queue, but RGB24DMD sinks can carry it at full resolution.
+  if (pData && (size_t)width * height * 3u > sizeof(Update::data) && DeliverHighResRGB24(pData, width, height))
+    return;
+
   if (pData && !UpdateFrameFits(width, height, 3u, sizeof(Update::data), "UpdateRGB24DataWithMetadataAndTimestamp"))
     return;
 

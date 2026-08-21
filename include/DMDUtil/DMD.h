@@ -253,6 +253,10 @@ class DMDUTILAPI DMD
                    uint32_t timestampMs = 0, const FrameContext* frameContext = nullptr);
   bool QueueBuffer();
 
+  // Deliver an RGB24 frame too large for Update straight to the RGB24DMD sinks, bypassing the
+  // frame queue. Returns true if at least one sink took it. See the definition for why.
+  bool DeliverHighResRGB24(const uint8_t* pData, uint16_t width, uint16_t height);
+
  private:
   Update* m_pUpdateBufferQueue[DMDUTIL_FRAME_BUFFER_SIZE];
   std::shared_ptr<Update> m_updateBuffered;
