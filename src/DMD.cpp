@@ -287,6 +287,37 @@ size_t PaletteBytesForDepth(uint8_t depth)
 namespace DMDUtil
 {
 
+
+// Update carries its payload in fixed inline arrays (Update::data, Update::segData), sized for the
+// largest frame this library supports. Width and height, though, arrive from the caller -- and for
+// FlexDMD that means straight from a table script, which can name any size it likes. A frame larger
+// than the array is therefore reachable input, not a broken internal invariant, and because the
+// arrays are inline the consequence is not a truncated frame but a memcpy straight through the rest
+// of the struct and on into the heap behind it.
+//
+// A rejected frame is dropped whole rather than queued with hasData = false: consumers size their
+// own reads from Update::width/height, so an oversized update is unusable even carrying no payload.
+static bool UpdateFrameFits(uint16_t width, uint16_t height, size_t bytesPerPixel, size_t capacity, const char* caller)
+{
+  const size_t required = (size_t)width * (size_t)height * bytesPerPixel;
+  if (required <= capacity)
+    return true;
+
+  // A rejected source usually keeps sending at frame rate, so log the size once rather than 60x a
+  // second. Tracking the dimensions means a table that changes resolution still reports the change.
+  static uint16_t lastWidth = 0;
+  static uint16_t lastHeight = 0;
+  if (width != lastWidth || height != lastHeight)
+  {
+    lastWidth = width;
+    lastHeight = height;
+    Log(DMDUtil_LogLevel_ERROR,
+        "%s: dropping %ux%u frame -- needs %zu bytes but the frame buffer holds %zu. This build "
+        "supports up to %ux%u.",
+        caller, width, height, required, capacity, DMDUTIL_MAX_FRAME_WIDTH, DMDUTIL_MAX_FRAME_HEIGHT);
+  }
+  return false;
+}
 void SERUM_CALLBACK Serum_LogCallback(const char* format, va_list args, const void* pUserData)
 {
   char buffer[1024];
@@ -807,6 +838,11 @@ bool DMD::DestroyConsoleDMD(ConsoleDMD* pConsoleDMD)
 void DMD::UpdateData(const uint8_t* pData, int depth, uint16_t width, uint16_t height, uint8_t r, uint8_t g, uint8_t b,
                      Mode mode, bool buffered)
 {
+  if (pData && !UpdateFrameFits(width, height, (mode == Mode::RGB16 ? 2u : (mode == Mode::RGB24 ? 3u : 1u)),
+                                sizeof(Update::data),
+                                "UpdateData"))
+    return;
+
   auto dmdUpdate = std::make_shared<Update>();
   if (pData)
   {
@@ -833,6 +869,11 @@ void DMD::UpdateData(const uint8_t* pData, int depth, uint16_t width, uint16_t h
 void DMD::UpdateDataWithTimestampInternal(const uint8_t* pData, int depth, uint16_t width, uint16_t height, uint8_t r,
                                           uint8_t g, uint8_t b, Mode mode, uint32_t timestampMs, bool buffered)
 {
+  if (pData && !UpdateFrameFits(width, height, (mode == Mode::RGB16 ? 2u : (mode == Mode::RGB24 ? 3u : 1u)),
+                                sizeof(Update::data),
+                                "UpdateDataWithTimestampInternal"))
+    return;
+
   auto dmdUpdate = std::make_shared<Update>();
   if (pData)
   {
@@ -933,6 +974,9 @@ void DMD::UpdateDataWithMetadataAndTimestamp(const uint8_t* pData, int depth, ui
                                              uint8_t r, uint8_t g, uint8_t b, uint32_t timestampMs,
                                              const FrameContext& frameContext, bool buffered)
 {
+  if (pData && !UpdateFrameFits(width, height, 1u, sizeof(Update::data), "UpdateDataWithMetadataAndTimestamp"))
+    return;
+
   auto dmdUpdate = std::make_shared<Update>();
   if (pData)
   {
@@ -982,6 +1026,9 @@ void DMD::UpdateRGB24DataWithTimestamp(const uint8_t* pData, uint16_t width, uin
 void DMD::UpdateRGB24DataWithMetadataAndTimestamp(const uint8_t* pData, uint16_t width, uint16_t height,
                                                   uint32_t timestampMs, const FrameContext& frameContext, bool buffered)
 {
+  if (pData && !UpdateFrameFits(width, height, 3u, sizeof(Update::data), "UpdateRGB24DataWithMetadataAndTimestamp"))
+    return;
+
   auto dmdUpdate = std::make_shared<Update>();
   dmdUpdate->mode = Mode::RGB24;
   dmdUpdate->depth = 24;
@@ -1004,6 +1051,9 @@ void DMD::UpdateRGB24DataWithMetadataAndTimestamp(const uint8_t* pData, uint16_t
 
 void DMD::UpdateRGB16Data(const uint16_t* pData, uint16_t width, uint16_t height, bool buffered)
 {
+  if (pData && !UpdateFrameFits(width, height, sizeof(uint16_t), sizeof(Update::segData), "UpdateRGB16Data"))
+    return;
+
   auto dmdUpdate = std::make_shared<Update>();
   dmdUpdate->mode = Mode::RGB16;
   dmdUpdate->depth = 24;
@@ -1027,6 +1077,9 @@ void DMD::UpdateRGB16Data(const uint16_t* pData, uint16_t width, uint16_t height
 void DMD::UpdateRGB16DataWithTimestamp(const uint16_t* pData, uint16_t width, uint16_t height, uint32_t timestampMs,
                                        bool buffered)
 {
+  if (pData && !UpdateFrameFits(width, height, sizeof(uint16_t), sizeof(Update::segData), "UpdateRGB16DataWithTimestamp"))
+    return;
+
   auto dmdUpdate = std::make_shared<Update>();
   dmdUpdate->mode = Mode::RGB16;
   dmdUpdate->depth = 24;
@@ -1050,6 +1103,9 @@ void DMD::UpdateRGB16DataWithTimestamp(const uint16_t* pData, uint16_t width, ui
 void DMD::UpdateRGB16DataWithMetadataAndTimestamp(const uint16_t* pData, uint16_t width, uint16_t height,
                                                   uint32_t timestampMs, const FrameContext& frameContext, bool buffered)
 {
+  if (pData && !UpdateFrameFits(width, height, sizeof(uint16_t), sizeof(Update::segData), "UpdateRGB16DataWithMetadataAndTimestamp"))
+    return;
+
   auto dmdUpdate = std::make_shared<Update>();
   dmdUpdate->mode = Mode::RGB16;
   dmdUpdate->depth = 24;

@@ -13,6 +13,13 @@
 #define DMDUTIL_MAX_FRAMES_BEHIND 32
 #define DMDUTIL_MAX_NAME_SIZE 16
 #define DMDUTIL_MAX_PATH_SIZE 256
+
+// Largest frame Update can carry. Update embeds its payload inline and is memcpy'd whole into the
+// frame queue and onto the wire, so raising these grows every queue slot and changes the DMDServer
+// wire format -- see the note above struct Update.
+#define DMDUTIL_MAX_FRAME_WIDTH 256
+#define DMDUTIL_MAX_FRAME_HEIGHT 64
+#define DMDUTIL_MAX_FRAME_PIXELS (DMDUTIL_MAX_FRAME_WIDTH * DMDUTIL_MAX_FRAME_HEIGHT)
 #define DMDUTIL_MAX_TRANSITIONAL_FRAME_DURATION 25
 
 #include <atomic>
@@ -114,8 +121,8 @@ class DMDUTILAPI DMD
     Mode mode = Mode::Data;                                    // int
     AlphaNumericLayout layout = AlphaNumericLayout::NoLayout;  // int
     int depth = 2;
-    uint8_t data[256 * 64 * 3] = {0};
-    uint16_t segData[256 * 64] = {0};  // RGB16 or segment data or SerumV1 palette
+    uint8_t data[DMDUTIL_MAX_FRAME_PIXELS * 3] = {0};
+    uint16_t segData[DMDUTIL_MAX_FRAME_PIXELS] = {0};  // RGB16 or segment data or SerumV1 palette
     uint16_t segData2[128];
     bool hasData = false;
     bool hasSegData = false;
