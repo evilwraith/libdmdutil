@@ -666,6 +666,7 @@ bool DMD::IsFinding() { return m_finding.load(std::memory_order_acquire); }
 
 bool DMD::HasDisplay() const
 {
+  std::shared_lock<std::shared_mutex> rgb24Lock(m_dmdSharedMutex);
   if (m_pZeDMD != nullptr || m_rgb24DMDs.size() > 0)
   {
     return true;
@@ -690,6 +691,7 @@ bool DMD::HasHDDisplay() const
 {
   if (m_pZeDMD != nullptr && m_pZeDMD->GetWidth() == 256) return true;
 
+  std::shared_lock<std::shared_mutex> rgb24Lock(m_dmdSharedMutex);
   if (m_rgb24DMDs.size() > 0)
   {
     for (RGB24DMD* pRGB24DMD : m_rgb24DMDs)
@@ -775,7 +777,10 @@ bool DMD::DestroyLevelDMD(LevelDMD* pLevelDMD)
 
 void DMD::AddRGB24DMD(RGB24DMD* pRGB24DMD)
 {
-  m_rgb24DMDs.push_back(pRGB24DMD);
+  {
+    std::unique_lock<std::shared_mutex> ul(m_dmdSharedMutex);
+    m_rgb24DMDs.push_back(pRGB24DMD);
+  }
   Log(DMDUtil_LogLevel_INFO, "Added RGB24DMD");
   if (!m_pRGB24DMDThread)
   {
@@ -793,20 +798,25 @@ RGB24DMD* DMD::CreateRGB24DMD(uint16_t width, uint16_t height)
 
 bool DMD::DestroyRGB24DMD(RGB24DMD* pRGB24DMD)
 {
-  auto it = std::find(m_rgb24DMDs.begin(), m_rgb24DMDs.end(), pRGB24DMD);
-  if (it != m_rgb24DMDs.end())
+  // Unique lock: RGB24DMDThread (and the direct high-res route in QueueRGB24Update) iterate
+  // m_rgb24DMDs under shared locks and memcpy pixel frames into each entry. Erasing and deleting
+  // without excluding those readers let Update() write RGB24 pixel data into freed heap memory --
+  // observed on-device as heap sprayed with 0xff,0x58,0x20 (DMD orange) causing SIGBUS on a
+  // corrupted function pointer and malloc_consolidate() aborts at table exit. The unique lock
+  // waits out any in-flight iteration; after the erase no reader can reach the object, so the
+  // delete is safe outside the lock.
   {
+    std::unique_lock<std::shared_mutex> ul(m_dmdSharedMutex);
+    auto it = std::find(m_rgb24DMDs.begin(), m_rgb24DMDs.end(), pRGB24DMD);
+    if (it == m_rgb24DMDs.end())
+      return false;
     m_rgb24DMDs.erase(it);
-    delete pRGB24DMD;
-
-    if (m_rgb24DMDs.empty())
-    {
-      //@todo terminate RGB24DMDThread
-    }
-
-    return true;
   }
-  return false;
+  delete pRGB24DMD;
+
+  //@todo terminate RGB24DMDThread when m_rgb24DMDs becomes empty
+
+  return true;
 }
 
 ConsoleDMD* DMD::CreateConsoleDMD(bool overwrite, FILE* out)
@@ -1895,13 +1905,16 @@ void DMD::SerumThread()
                 flags |= FLAG_REQUEST_32P_FRAMES;
             }
 
-            if (m_rgb24DMDs.size() > 0)
             {
-              for (RGB24DMD* pRGB24DMD : m_rgb24DMDs)
+              std::shared_lock<std::shared_mutex> rgb24Lock(m_dmdSharedMutex);
+              if (m_rgb24DMDs.size() > 0)
               {
-                (void)pRGB24DMD;
-                flags |= FLAG_REQUEST_32P_FRAMES;
-                flags |= FLAG_REQUEST_64P_FRAMES;
+                for (RGB24DMD* pRGB24DMD : m_rgb24DMDs)
+                {
+                  (void)pRGB24DMD;
+                  flags |= FLAG_REQUEST_32P_FRAMES;
+                  flags |= FLAG_REQUEST_64P_FRAMES;
+                }
               }
             }
 
@@ -2976,6 +2989,11 @@ void DMD::RGB24DMDThread()
         continue;
       }
 
+      // Shared lock for the whole delivery block: every iteration of m_rgb24DMDs below hands the
+      // frame to RGB24DMD::Update, and DestroyRGB24DMD must not free an entry mid-iteration.
+      // Released at the end of each queue-drain iteration. The CV wait's shared lock above was
+      // already unlocked, so this is not a recursive acquisition.
+      std::shared_lock<std::shared_mutex> rgb24Lock(m_dmdSharedMutex);
       if (!m_rgb24DMDs.empty() &&
           (m_pUpdateBufferQueue[bufferPositionMod]->hasData || m_pUpdateBufferQueue[bufferPositionMod]->hasSegData))
       {

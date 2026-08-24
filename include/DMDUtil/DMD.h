@@ -344,7 +344,9 @@ class DMDUTILAPI DMD
   std::thread* m_pPupDMDThread;
   std::thread* m_pSerumThread;
   std::thread* m_pVniThread;
-  std::shared_mutex m_dmdSharedMutex;
+  // mutable: HasDisplay()/HasHDDisplay() are const but must take a shared lock to iterate
+  // m_rgb24DMDs safely against DestroyRGB24DMD.
+  mutable std::shared_mutex m_dmdSharedMutex;
   std::condition_variable_any m_dmdCV;
   std::atomic<bool> m_stopFlag;
   std::atomic<uint16_t> m_updateBufferQueuePosition;
