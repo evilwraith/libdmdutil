@@ -84,6 +84,7 @@ curl -sL https://github.com/PPUC/libserum/archive/${LIBSERUM_SHA}.tar.gz -o libs
 tar xzf libserum-${LIBSERUM_SHA}.tar.gz
 mv libserum-${LIBSERUM_SHA} libserum
 cd libserum
+./platforms/win-mingw/x64/external.sh
 cmake \
    -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
    -DPLATFORM=win-mingw \

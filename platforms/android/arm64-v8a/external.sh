@@ -57,6 +57,7 @@ curl -sL https://github.com/PPUC/libserum/archive/${LIBSERUM_SHA}.tar.gz -o libs
 tar xzf libserum-${LIBSERUM_SHA}.tar.gz
 mv libserum-${LIBSERUM_SHA} libserum
 cd libserum
+./platforms/android/arm64-v8a/external.sh
 cmake \
    -DPLATFORM=android \
    -DARCH=arm64-v8a \

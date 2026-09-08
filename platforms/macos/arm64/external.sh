@@ -77,6 +77,7 @@ curl -sL https://github.com/PPUC/libserum/archive/${LIBSERUM_SHA}.tar.gz -o libs
 tar xzf libserum-${LIBSERUM_SHA}.tar.gz
 mv libserum-${LIBSERUM_SHA} libserum
 cd libserum
+./platforms/macos/arm64/external.sh
 cmake \
    -DPLATFORM=macos \
    -DARCH=arm64 \

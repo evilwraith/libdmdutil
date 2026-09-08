@@ -90,6 +90,7 @@ curl -sL https://github.com/PPUC/libserum/archive/${LIBSERUM_SHA}.tar.gz -o libs
 tar xzf libserum-${LIBSERUM_SHA}.tar.gz
 mv libserum-${LIBSERUM_SHA} libserum
 cd libserum
+./platforms/win/x86/external.sh
 cmake \
    -G "Visual Studio 18 2026" \
    -A Win32 \
