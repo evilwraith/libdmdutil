@@ -342,6 +342,7 @@ class DMDUTILAPI DMD
   std::thread* m_pDumpDMDRgb565Thread;
   std::thread* m_pDumpDMDRgb888Thread;
   std::thread* m_pPupDMDThread;
+  std::thread m_findDisplaysThread;
   std::thread* m_pSerumThread;
   std::thread* m_pVniThread;
   // mutable: HasDisplay()/HasHDDisplay() are const but must take a shared lock to iterate
