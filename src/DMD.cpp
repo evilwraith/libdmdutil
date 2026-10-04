@@ -32,6 +32,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -39,6 +40,7 @@
 #include <filesystem>
 #include <limits>
 #include <unordered_set>
+#include <vector>
 
 #include "AlphaNumeric.h"
 #include "FrameUtil.h"
@@ -4095,6 +4097,104 @@ void DMD::DumpDMDRawThread()
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// PuP capture for RGB frames (FlexDMD, UltraDMD and other script-driven DMDs).
+//
+// On Windows those frames reach PinUP through DmdExt, whose PinUP output only accepts 2/4-shade
+// frames at a fixed 128x32. DmdExt therefore turns an RGB frame into 16 shades by HSL lightness,
+// and when the frame is larger (FlexDMD's 256x64 "HQ" mode) scales it to 128x32 with WPF:
+//   RGB24 -> ImageUtil.ConvertToGray(numColors 16)          per pixel: round(L * 15)
+//         -> TransformGray: ConvertFromGray4(hue 0, sat 1)  gray -> red-hued Bgr32 bitmap
+//                           TransformedBitmap(ScaleTransform 0.5)  2:1 area average (WIC Fant)
+//                           ConvertToGray4(bmp)              per pixel: round(L * 15)
+// PinUP then hashes that frame on a black-to-OrangeRed ramp, which is what every PupCapture
+// bitmap authored this way contains (16 colours, red = 17 * shade). Reproducing the chain lets
+// the existing indexed matcher, loaded at depth 4, match those captures. C# Math.Round rounds
+// half to even and the doubles below follow the C# operation order exactly, so the exact
+// .5 cases (which are common: L*15 of an averaged block lands on x.5 whenever the four shades
+// sum to 2 mod 4) resolve the same way. The one guess is WIC's rounding of a per-channel
+// average that is not a whole number; it only matters in blocks that mix shades below and above
+// 8, and round-half-up is used.
+// ---------------------------------------------------------------------------------------------
+static double DmdExtLightness(uint8_t red, uint8_t green, uint8_t blue)
+{
+  const double r = red / 255.0;
+  const double g = green / 255.0;
+  const double b = blue / 255.0;
+  const double mn = std::min(std::min(r, g), b);
+  const double mx = std::max(std::max(r, g), b);
+  return (mx + mn) / 2.0;
+}
+
+static uint8_t DmdExtShade(double lightness)
+{
+  // std::nearbyint uses the current rounding mode, round-half-to-even by default -- C#'s
+  // Math.Round(double) default.
+  return (uint8_t)std::nearbyint(lightness * 15.0);
+}
+
+static double DmdExtColorCalc(double c, double t1, double t2)
+{
+  if (c < 0) c += 1.0;
+  if (c > 1) c -= 1.0;
+  if (6.0 * c < 1.0) return t1 + (t2 - t1) * 6.0 * c;
+  if (2.0 * c < 1.0) return t2;
+  if (3.0 * c < 2.0) return t1 + (t2 - t1) * (2.0 / 3.0 - c) * 6.0;
+  return t1;
+}
+
+// ColorUtil.HslToRgb(hue 0, saturation 1, luminosity shade/15), as ConvertFromGray4 calls it.
+static void DmdExtShadeToRgb(uint8_t shade, uint8_t& red, uint8_t& green, uint8_t& blue)
+{
+  const double luminosity = 1.0 * shade / 15;
+  const double saturation = 1.0;
+  const double t2 = (luminosity < 0.5) ? luminosity * (1.0 + saturation) : (luminosity + saturation) - (luminosity * saturation);
+  const double t1 = 2.0 * luminosity - t2;
+  const double th = 0.0 / 6.0;
+  red = (uint8_t)std::nearbyint(DmdExtColorCalc(th + (1.0 / 3.0), t1, t2) * 255.0);
+  green = (uint8_t)std::nearbyint(DmdExtColorCalc(th, t1, t2) * 255.0);
+  blue = (uint8_t)std::nearbyint(DmdExtColorCalc(th - (1.0 / 3.0), t1, t2) * 255.0);
+}
+
+// RGB24 frame of 128x32 or 256x64 -> the 128x32 16-shade frame DmdExt hands PinUP. Returns false
+// for any other size (DmdExt would letterbox those; no capture set seen so far needs it).
+static bool DmdExtPinUpFrame(const uint8_t* rgb, uint16_t width, uint16_t height, uint8_t* out128x32)
+{
+  if (width == 128 && height == 32)
+  {
+    for (int i = 0; i < 128 * 32; i++)
+      out128x32[i] = DmdExtShade(DmdExtLightness(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]));
+    return true;
+  }
+  if (width == 256 && height == 64)
+  {
+    uint8_t shadeRgb[16][3];
+    for (uint8_t s = 0; s < 16; s++)
+      DmdExtShadeToRgb(s, shadeRgb[s][0], shadeRgb[s][1], shadeRgb[s][2]);
+    for (int y = 0; y < 32; y++)
+    {
+      for (int x = 0; x < 128; x++)
+      {
+        unsigned int sum[3] = {0, 0, 0};
+        for (int dy = 0; dy < 2; dy++)
+        {
+          for (int dx = 0; dx < 2; dx++)
+          {
+            const int p = ((y * 2 + dy) * 256 + (x * 2 + dx)) * 3;
+            const uint8_t shade = DmdExtShade(DmdExtLightness(rgb[p], rgb[p + 1], rgb[p + 2]));
+            sum[0] += shadeRgb[shade][0];
+            sum[1] += shadeRgb[shade][1];
+            sum[2] += shadeRgb[shade][2];
+          }
+        }
+        out128x32[y * 128 + x] = DmdExtShade(DmdExtLightness((uint8_t)((sum[0] + 2) / 4), (uint8_t)((sum[1] + 2) / 4), (uint8_t)((sum[2] + 2) / 4)));
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 void DMD::PupDMDThread()
 {
   uint16_t bufferPosition = 0;
@@ -4106,6 +4206,8 @@ void DMD::PupDMDThread()
   // depth cannot be used directly.
   uint8_t observedMaxIndex = 0;
   uint8_t loadedDepth = 0;
+  // Last RGB frame matched, so an unchanged frame is not converted and hashed again.
+  std::vector<uint8_t> rgbRenderBuffer;
 
   (void)m_stopFlag.load(std::memory_order_acquire);
 
@@ -4283,6 +4385,54 @@ void DMD::PupDMDThread()
 
           if (triggerID > 0) HandleTrigger(triggerID);
         }
+      }
+
+      // RGB frames: see DmdExtPinUpFrame. Only true RGB (depth 24); a tinted gray RGB24 update
+      // is a different Windows path (Render_4_Shades) and is not reproduced here.
+      if (Config::GetInstance()->IsPUPCapture() && name[0] != '\0' &&
+          m_pUpdateBufferQueue[bufferPositionMod]->hasData &&
+          m_pUpdateBufferQueue[bufferPositionMod]->mode == Mode::RGB24 &&
+          m_pUpdateBufferQueue[bufferPositionMod]->depth == 24)
+      {
+        const uint16_t width = m_pUpdateBufferQueue[bufferPositionMod]->width;
+        const uint16_t height = m_pUpdateBufferQueue[bufferPositionMod]->height;
+        if (!((width == 128 && height == 32) || (width == 256 && height == 64))) continue;
+
+        // DmdExt always hands PinUP 16 shades for an RGB source, so the set is loaded at depth 4.
+        if (loadedDepth != 4)
+        {
+          if (m_pPUPDMD)
+          {
+            delete (m_pPUPDMD);
+            m_pPUPDMD = nullptr;
+          }
+          if (m_pupVideosPath[0] == '\0') strcpy(m_pupVideosPath, Config::GetInstance()->GetPUPVideosPath());
+          m_pPUPDMD = new PUPDMD::DMD();
+          m_pPUPDMD->SetLogCallback(PUPDMDLogCallback, nullptr);
+          Log(DMDUtil_LogLevel_INFO, "Loading PuP capture triggers for %s at depth 4 for %dx%d RGB frames", pupRomName,
+              width, height);
+          if (!m_pPUPDMD->Load(m_pupVideosPath, pupRomName, 4))
+          {
+            delete (m_pPUPDMD);
+            m_pPUPDMD = nullptr;
+          }
+          loadedDepth = 4;
+          rgbRenderBuffer.clear();
+        }
+        if (!m_pPUPDMD) continue;
+
+        const size_t rgbLength = (size_t)width * height * 3;
+        if (rgbRenderBuffer.size() == rgbLength &&
+            memcmp(rgbRenderBuffer.data(), m_pUpdateBufferQueue[bufferPositionMod]->data, rgbLength) == 0)
+          continue;
+        rgbRenderBuffer.assign(m_pUpdateBufferQueue[bufferPositionMod]->data,
+                               m_pUpdateBufferQueue[bufferPositionMod]->data + rgbLength);
+
+        uint8_t pinUpFrame[128 * 32];
+        if (!DmdExtPinUpFrame(rgbRenderBuffer.data(), width, height, pinUpFrame)) continue;
+
+        const uint16_t triggerID = m_pPUPDMD->MatchIndexed(pinUpFrame, 128, 32);
+        if (triggerID > 0) HandleTrigger(triggerID);
       }
     }
   }
