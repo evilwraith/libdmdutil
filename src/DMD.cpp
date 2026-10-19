@@ -1751,6 +1751,25 @@ void DMD::SerumThread()
     Update* lastDmdUpdate = nullptr;
     uint8_t flags = 0;
 
+    const auto rotateIfDue = [&](uint32_t now)
+    {
+      if (!m_pSerum || nextRotation == 0 || m_pSerum->rotationtimer == 0 || !lastDmdUpdate || now < nextRotation)
+        return;
+
+      uint32_t result = Serum_Rotate();
+
+      Log(DMDUtil_LogLevel_DEBUG, "Serum: rotation=%lu, flags=%lu", m_pSerum->rotationtimer, result >> 16);
+
+      QueueSerumFrames(lastDmdUpdate, result & 0x10000, result & 0x20000, false, 0);
+
+      if (result > 0 && ((result & 0xffff) < 2048))
+      {
+        nextRotation = now + m_pSerum->rotationtimer;
+      }
+      else
+        nextRotation = 0;
+    };
+
     (void)m_stopFlag.load(std::memory_order_acquire);
 
     bool showNotColorizedFrames = pConfig->IsShowNotColorizedFrames();
@@ -1771,15 +1790,23 @@ void DMD::SerumThread()
         return;
       }
 
-      if (nextRotation == 0)
       {
+        const auto hasWork = [&]()
+        {
+          return m_stopFlag.load(std::memory_order_relaxed) ||
+                 (m_updateBufferQueuePosition.load(std::memory_order_relaxed) != bufferPosition);
+        };
         std::shared_lock<std::shared_mutex> sl(m_dmdSharedMutex);
-        m_dmdCV.wait(sl,
-                     [&]()
-                     {
-                       return m_stopFlag.load(std::memory_order_relaxed) ||
-                              (m_updateBufferQueuePosition.load(std::memory_order_relaxed) != bufferPosition);
-                     });
+        if (nextRotation == 0)
+        {
+          m_dmdCV.wait(sl, hasWork);
+        }
+        else
+        {
+          // Sleep until the next rotation is due instead of spinning, but wake up for new frames.
+          const int32_t untilRotation = static_cast<int32_t>(nextRotation - GetMonotonicTimeMs());
+          if (untilRotation > 0) m_dmdCV.wait_for(sl, std::chrono::milliseconds(untilRotation), hasWork);
+        }
         sl.unlock();
       }
 
@@ -1978,6 +2005,11 @@ void DMD::SerumThread()
 
           if (m_pSerum)
           {
+            // Serum_Colorize() restarts the timer of a rotation step that is already due when the same frame is
+            // identified again, e.g. a blinking word in a dynamic zone. Run the due step first, otherwise the
+            // rotation stutters whenever a frame arrives just after the step's time.
+            rotateIfDue(GetMonotonicTimeMs());
+
             FrameContext frameContext{};
             GetQueueFrameContext(bufferPositionMod, frameContext);
 
@@ -2103,24 +2135,12 @@ void DMD::SerumThread()
         }
       }
 
-      if (m_pSerum)
-      {
-        if (nextRotation > 0 && m_pSerum->rotationtimer > 0 && lastDmdUpdate && now >= nextRotation)
-        {
-          uint32_t result = Serum_Rotate();
+      now = GetMonotonicTimeMs();
+      rotateIfDue(now);
 
-          Log(DMDUtil_LogLevel_DEBUG, "Serum: rotation=%lu, flags=%lu", m_pSerum->rotationtimer, result >> 16);
-
-          QueueSerumFrames(lastDmdUpdate, result & 0x10000, result & 0x20000, false, 0);
-
-          if (result > 0 && ((result & 0xffff) < 2048))
-          {
-            nextRotation = now + m_pSerum->rotationtimer;
-          }
-          else
-            nextRotation = 0;
-        }
-      }
+      // A due rotation that can't run anymore would otherwise keep the wait above from sleeping.
+      if (nextRotation > 0 && now >= nextRotation && (!m_pSerum || m_pSerum->rotationtimer == 0 || !lastDmdUpdate))
+        nextRotation = 0;
     }
   }
 }
