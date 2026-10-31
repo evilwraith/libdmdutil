@@ -14,18 +14,16 @@
 #define DMDUTIL_MAX_NAME_SIZE 16
 #define DMDUTIL_MAX_PATH_SIZE 256
 
-// Largest frame Update can carry. Update embeds its payload inline and is memcpy'd whole into the
-// frame queue and onto the wire, so raising these grows every queue slot and changes the DMDServer
-// wire format -- see the note above struct Update.
-#define DMDUTIL_MAX_FRAME_WIDTH 256
-#define DMDUTIL_MAX_FRAME_HEIGHT 64
-#define DMDUTIL_MAX_FRAME_PIXELS (DMDUTIL_MAX_FRAME_WIDTH * DMDUTIL_MAX_FRAME_HEIGHT)
 #define DMDUTIL_MAX_TRANSITIONAL_FRAME_DURATION 25
 
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
+#include <deque>
+#include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <shared_mutex>
@@ -34,6 +32,12 @@
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
+#endif
+
+#if !(                                                                                                                \
+    (defined(__APPLE__) && ((defined(TARGET_OS_IOS) && TARGET_OS_IOS) || (defined(TARGET_OS_TV) && TARGET_OS_TV))) || \
+    defined(__ANDROID__))
+#define DMDUTIL_HAS_USB_DEVICES 1
 #endif
 
 class ZeDMD;
@@ -74,6 +78,8 @@ enum class AlphaNumericLayout
 class AlphaNumeric;
 class Serum;
 class PixelcadeDMD;
+class PinDMD3;
+class DMDExtStream;
 class LevelDMD;
 class RGB24DMD;
 class ConsoleDMD;
@@ -121,8 +127,8 @@ class DMDUTILAPI DMD
     Mode mode = Mode::Data;                                    // int
     AlphaNumericLayout layout = AlphaNumericLayout::NoLayout;  // int
     int depth = 2;
-    uint8_t data[DMDUTIL_MAX_FRAME_PIXELS * 3] = {0};
-    uint16_t segData[DMDUTIL_MAX_FRAME_PIXELS] = {0};  // RGB16 or segment data or SerumV1 palette
+    uint8_t data[256 * 64 * 3] = {0};
+    uint16_t segData[256 * 64] = {0};  // RGB16 or segment data or SerumV1 palette
     uint16_t segData2[128];
     bool hasData = false;
     bool hasSegData = false;
@@ -285,11 +291,25 @@ class DMDUTILAPI DMD
   bool ConnectDMDServer();
   bool GetQueueFrameContext(uint8_t bufferPositionMod, FrameContext& frameContext) const;
   bool UpdatePalette(uint8_t* pPalette, uint8_t depth, uint8_t r, uint8_t g, uint8_t b);
-  void UpdateData(const uint8_t* pData, int depth, uint16_t width, uint16_t height, uint8_t r, uint8_t g, uint8_t b,
-                  Mode mode, bool buffered = false);
-  void UpdateDataWithTimestampInternal(const uint8_t* pData, int depth, uint16_t width, uint16_t height, uint8_t r,
-                                       uint8_t g, uint8_t b, Mode mode, uint32_t timestampMs, bool buffered = false);
-  void AdjustRGB24Depth(uint8_t* pData, uint8_t* pDstData, int length, uint8_t* palette, uint8_t depth);
+  void QueueFrame(Mode mode, const void* pData, int depth, uint16_t width, uint16_t height, uint8_t r, uint8_t g,
+                  uint8_t b, bool buffered, bool hasTimestamp, uint32_t timestampMs, const FrameContext* pFrameContext);
+  void AdjustRGB24Depth(const uint8_t* pData, uint8_t* pDstData, int length, const uint8_t* palette, uint8_t depth);
+  bool ConvertColorUpdateToRgb24(const Update& update, uint8_t* pPalette, uint8_t* pRgb24);
+
+  enum class DecodedKind
+  {
+    None,
+    Indexed,
+    Rgb24
+  };
+  struct OutputDecoder;
+  using OutputHandler = std::function<void(uint8_t slot, uint16_t position, uint16_t skipped)>;
+  void OutputLoop(bool everyFrame, uint32_t idleTimeoutMs, const std::function<void()>& onIdle,
+                  const OutputHandler& onUpdate);
+  bool PrefersSerumFrame(uint16_t targetWidth, Mode mode) const;
+  bool ShouldRenderUpdate(Mode mode, bool excludeColorized, bool showNotColorized, uint16_t targetWidth);
+  DecodedKind DecodeUpdate(const Update& update, OutputDecoder& decoder);
+  FILE* OpenDumpFile(const char* name, const char* extension, std::string& outPath);
   void HandleTrigger(uint16_t id);
   void QueueSerumFrames(Update* dmdUpdate, bool render32 = true, bool render64 = true, bool hasTimestamp = false,
                         uint32_t timestampMs = 0, std::shared_ptr<Update>* primaryOutput = nullptr);
@@ -308,8 +328,7 @@ class DMDUTILAPI DMD
   void ZeDMDThread();
   void DumpDMDTxtThread();
   void DumpDMDRawThread();
-  void DumpDMDRgb565Thread();
-  void DumpDMDRgb888Thread();
+  void DumpDMDColorThread(bool rgb888);
   bool GetDumpSuffix(const char* romName, char* outSuffix, size_t outSize);
   bool GetQueueTimestamp(uint8_t bufferPositionMod, uint32_t& timestampMs) const;
   void PupDMDThread();
@@ -331,6 +350,16 @@ class DMDUTILAPI DMD
   std::vector<ConsoleDMD*> m_consoleDMDs;
   DMDServerConnector* m_pDMDServerConnector;
   bool m_dmdServerDisconnectOthers = false;
+  struct DMDServerQueueEntry
+  {
+    std::shared_ptr<Update> update;
+    bool buffered;
+  };
+  std::deque<DMDServerQueueEntry> m_dmdServerQueue;
+  std::mutex m_dmdServerQueueMutex;
+  std::condition_variable m_dmdServerQueueCv;
+  std::thread* m_pDMDServerSenderThread;
+  void DMDServerSenderThread();
 
   std::thread* m_pLevelDMDThread;
   std::thread* m_pRGB24DMDThread;
@@ -359,23 +388,21 @@ class DMDUTILAPI DMD
   bool m_hasUpdateBuffered = false;
   static std::atomic<bool> m_finding;
 
-#if !(                                                                                                                \
-    (defined(__APPLE__) && ((defined(TARGET_OS_IOS) && TARGET_OS_IOS) || (defined(TARGET_OS_TV) && TARGET_OS_TV))) || \
-    defined(__ANDROID__))
   void PixelcadeDMDThread();
   PixelcadeDMD* m_pPixelcadeDMD;
   std::thread* m_pPixelcadeDMDThread;
-#endif
-
-#if defined(DMDUTIL_ENABLE_PIN2DMD) && !((defined(__APPLE__) && ((defined(TARGET_OS_IOS) && TARGET_OS_IOS) || \
-                                                                 (defined(TARGET_OS_TV) && TARGET_OS_TV))) || \
-                                         defined(__ANDROID__))
+  void PinDMD3Thread();
+  PinDMD3* m_pPinDMD3;
+  std::thread* m_pPinDMD3Thread;
+  void DMDExtStreamThread();
+  DMDExtStream* m_pDMDExtStream;
+  std::thread* m_pDMDExtStreamThread;
   void PIN2DMDThread();
   std::thread* m_pPIN2DMDThread;
   bool m_PIN2DMDConnected;
   uint16_t m_PIN2DMDWidth;
   uint16_t m_PIN2DMDHeight;
-#endif
+  std::atomic<bool> m_dmdServerConnectionLost{false};
 };
 
 }  // namespace DMDUtil
