@@ -296,9 +296,10 @@ class DMDUTILAPI DMD
   void AdjustRGB24Depth(const uint8_t* pData, uint8_t* pDstData, int length, const uint8_t* palette, uint8_t depth);
   bool ConvertColorUpdateToRgb24(const Update& update, uint8_t* pPalette, uint8_t* pRgb24);
 
+  // Not "None": X11's Xlib.h defines None as a macro, and hosts include it before this header
   enum class DecodedKind
   {
-    None,
+    Skip,
     Indexed,
     Rgb24
   };

@@ -1185,11 +1185,11 @@ bool DMD::ConvertColorUpdateToRgb24(const Update& update, uint8_t* pPalette, uin
 
 DMD::DecodedKind DMD::DecodeUpdate(const Update& update, OutputDecoder& d)
 {
-  if (!ShouldRenderUpdate(update.mode, d.excludeColorized, d.showNotColorized, d.targetWidth)) return DecodedKind::None;
-  if (!(update.hasData || update.hasSegData)) return DecodedKind::None;
+  if (!ShouldRenderUpdate(update.mode, d.excludeColorized, d.showNotColorized, d.targetWidth)) return DecodedKind::Skip;
+  if (!(update.hasData || update.hasSegData)) return DecodedKind::Skip;
 
   const size_t length = (size_t)update.width * update.height;
-  if (length == 0 || length > DMDUTIL_MAX_FRAME_PIXELS) return DecodedKind::None;
+  if (length == 0 || length > DMDUTIL_MAX_FRAME_PIXELS) return DecodedKind::Skip;
 
   const bool contextChanged =
       update.width != d.width || update.height != d.height || update.depth != d.depth || update.mode != d.mode;
@@ -1214,9 +1214,9 @@ DMD::DecodedKind DMD::DecodeUpdate(const Update& update, OutputDecoder& d)
   switch (update.mode)
   {
     case Mode::RGB24:
-      if (!update.hasData) return DecodedKind::None;
+      if (!update.hasData) return DecodedKind::Skip;
       if (!contextChanged && !paletteChanged && memcmp(d.rawRgb24, update.data, length * 3) == 0)
-        return DecodedKind::None;
+        return DecodedKind::Skip;
       memcpy(d.rawRgb24, update.data, length * 3);
       AdjustRGB24Depth(update.data, d.rgb24, (int)length, d.palette, (uint8_t)update.depth);
       return commit(DecodedKind::Rgb24);
@@ -1233,7 +1233,7 @@ DMD::DecodedKind DMD::DecodeUpdate(const Update& update, OutputDecoder& d)
     case Mode::SerumV1:
     case Mode::Vni:
     {
-      if (!update.hasData) return DecodedKind::None;
+      if (!update.hasData) return DecodedKind::Skip;
       const size_t paletteBytes = PaletteBytesForDepth((uint8_t)update.depth);
       if (paletteBytes > 0 && paletteBytes <= sizeof(d.palette)) memcpy(d.palette, update.segData, paletteBytes);
       memcpy(d.indexed, update.data, length);
@@ -1243,9 +1243,9 @@ DMD::DecodedKind DMD::DecodeUpdate(const Update& update, OutputDecoder& d)
 
     case Mode::Data:
     case Mode::NotColorized:
-      if (update.mode == Mode::NotColorized && !d.showNotColorized) return DecodedKind::None;
-      if (!update.hasData) return DecodedKind::None;
-      if (!contextChanged && !paletteChanged && memcmp(d.indexed, update.data, length) == 0) return DecodedKind::None;
+      if (update.mode == Mode::NotColorized && !d.showNotColorized) return DecodedKind::Skip;
+      if (!update.hasData) return DecodedKind::Skip;
+      if (!contextChanged && !paletteChanged && memcmp(d.indexed, update.data, length) == 0) return DecodedKind::Skip;
       memcpy(d.indexed, update.data, length);
       FrameUtil::Helper::ConvertToRgb24(d.rgb24, d.indexed, (int)length, d.palette);
       return commit(DecodedKind::Indexed);
@@ -1263,7 +1263,7 @@ DMD::DecodedKind DMD::DecodeUpdate(const Update& update, OutputDecoder& d)
         memcpy(d.segData2, update.segData2, sizeof(d.segData2));
         changed = true;
       }
-      if (!changed) return DecodedKind::None;
+      if (!changed) return DecodedKind::Skip;
       if (update.hasSegData2)
         m_pAlphaNumeric->Render(d.indexed, update.layout, d.segData1, d.segData2);
       else
@@ -1273,7 +1273,7 @@ DMD::DecodedKind DMD::DecodeUpdate(const Update& update, OutputDecoder& d)
     }
 
     default:
-      return DecodedKind::None;
+      return DecodedKind::Skip;
   }
 }
 
@@ -1351,7 +1351,7 @@ void DMD::RGB24DMDThread()
                // released its own shared lock before calling here, so this is not recursive.
                std::shared_lock<std::shared_mutex> rgb24Lock(m_dmdSharedMutex);
                if (m_rgb24DMDs.empty()) return;
-               if (DecodeUpdate(*m_pUpdateBufferQueue[slot], *decoder) == DecodedKind::None) return;
+               if (DecodeUpdate(*m_pUpdateBufferQueue[slot], *decoder) == DecodedKind::Skip) return;
 
                for (RGB24DMD* pRGB24DMD : m_rgb24DMDs)
                {

@@ -112,7 +112,7 @@ void DMD::ZeDMDThread()
                  Log(DMDUtil_LogLevel_INFO, "ZeDMD: Skipping %d frame(s) before position %d", skipped, position);
 
                const Update& update = *m_pUpdateBufferQueue[slot];
-               if (DecodeUpdate(update, *decoder) == DecodedKind::None) return;
+               if (DecodeUpdate(update, *decoder) == DecodedKind::Skip) return;
 
                if (decoder->width != width || decoder->height != height)
                {
@@ -176,7 +176,7 @@ void DMD::PIN2DMDThread()
   OutputLoop(false, 0, nullptr,
              [&](uint8_t slot, uint16_t, uint16_t)
              {
-               if (DecodeUpdate(*m_pUpdateBufferQueue[slot], *decoder) == DecodedKind::None) return;
+               if (DecodeUpdate(*m_pUpdateBufferQueue[slot], *decoder) == DecodedKind::Skip) return;
                if (!ScaleFrameToTarget(decoder->rgb24, decoder->width, decoder->height, scaled.data(), targetWidth,
                                        targetHeight, 24, temp))
                  return;
@@ -203,7 +203,7 @@ void DMD::PinDMD3Thread()
   OutputLoop(false, 0, nullptr,
              [&](uint8_t slot, uint16_t, uint16_t)
              {
-               if (DecodeUpdate(*m_pUpdateBufferQueue[slot], *decoder) == DecodedKind::None) return;
+               if (DecodeUpdate(*m_pUpdateBufferQueue[slot], *decoder) == DecodedKind::Skip) return;
                if (!ScaleFrameToTarget(decoder->rgb24, decoder->width, decoder->height, scaled.data(), targetWidth,
                                        targetHeight, 24, temp))
                  return;
@@ -234,7 +234,7 @@ void DMD::PixelcadeDMDThread()
              [&](uint8_t slot, uint16_t, uint16_t)
              {
                const Update& update = *m_pUpdateBufferQueue[slot];
-               if (DecodeUpdate(update, *decoder) == DecodedKind::None) return;
+               if (DecodeUpdate(update, *decoder) == DecodedKind::Skip) return;
 
                if (decoder->rgb565Source)
                {
@@ -288,7 +288,7 @@ void DMD::DMDExtStreamThread()
       [&](uint8_t slot, uint16_t, uint16_t)
       {
         const DecodedKind kind = DecodeUpdate(*m_pUpdateBufferQueue[slot], *decoder);
-        if (kind == DecodedKind::None) return;
+        if (kind == DecodedKind::Skip) return;
         if (!m_pDMDExtStream->EnsureConnected()) return;
 
         m_pDMDExtStream->SetGameName(m_romName);
