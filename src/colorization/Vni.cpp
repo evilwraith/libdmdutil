@@ -168,6 +168,8 @@ void DMD::VniThread()
           const std::string baseName = std::string(m_romName);
           FindCaseInsensitiveFile(baseDir, baseName + ".pal", &palPath);
           FindCaseInsensitiveFile(baseDir, baseName + ".vni", &vniPath);
+          // A v1 palette's animations come in an FSQ file instead; libvni tells the two apart by content
+          if (vniPath.empty()) FindCaseInsensitiveFile(baseDir, baseName + ".fsq", &vniPath);
           FindCaseInsensitiveFile(baseDir, baseName + ".pac", &pacPath);
 
           const char* vniKey = pConfig->GetVniKey();
